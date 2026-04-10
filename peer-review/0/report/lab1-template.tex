@@ -1,0 +1,151 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\graphicspath{{figures/}}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+
+%make lists tighter
+\usepackage{enumitem}
+\setlist{nolistsep}
+
+%reduce spacing before and after section
+\usepackage{titlesec}
+\titlespacing\section{0pt}{6pt}{0pt}
+
+\title{Lab 1 - PECARN TBI Data, STAT 214, Spring 2026}
+
+% submission must not contain your name
+% but feel free to make a version for yourself with your name on it
+\author{Anonymous}
+
+\begin{document}
+\maketitle
+
+Please use this structure for your report, but you do not have to
+slavishly follow this template. All bullet points are merely suggestions
+and potential points to discuss in your writeup. Your report should be
+no more than 14 pages, including figures. Do not include \emph{any} code
+or code output in your report. Indicate your informal collaborators on
+the assignment, if you had any.
+
+\section{Introduction}\label{introduction}
+
+Traumatic brain injury (TBI) is a leading cause of death and disability in pediatric patients younger than 18 years. Each year in the United States, over half a million children seek emergency care for head trauma, presenting clinicians with a critical decision: which patients require computed tomography (CT) scans to detect potentially life-threatening intracranial injuries? The Pediatric Emergency Care Applied Research Network (PECARN) developed clinical decision rules (Kuppermann et al., 2009) to identify children at very low risk of clinically important TBIs, aiming to safely reduce unnecessary neuroimaging while maintaining high sensitivity.
+
+This report presents an exploratory data analysis of the PECARN TBI dataset. We (1) assess data quality and clean the data, (2) present three findings with publication-quality graphics, (3) implement three classification models (PECARN rule, logistic regression, XGBoost), and (4) perform reality and stability checks to evaluate our preprocessing choices.
+
+
+\section{Data}\label{data}
+
+The PECARN TBI dataset (\texttt{TBI PUD 10-08-2013.csv}) contains 43,399 patient observations across 125 variables from a prospective study of children under 18 presenting to emergency departments with head trauma. Variables include demographics, injury characteristics, clinical signs (loss of consciousness, amnesia, vomiting, headache), physical exam (GCS, skull fracture, hematoma), and outcomes (CT performance, ciTBI). The data was collected at 25 diverse EDs (2004--2006) and is directly relevant to developing risk stratification rules.
+
+\subsection{Data Collection}\label{data-collection}
+
+Data were collected via standardized case report forms by ED clinicians (physicians, residents, NPs, PAs) during routine care. Measurement reliability varies: objective variables (age, CT outcome) have low variability; standardized scales (GCS) have moderate inter-rater reliability; subjective assessments (headache severity, hematoma size) have higher variability. Special codes 90 (other/unknown), 91 (not done), and 92 (not applicable) are used for missingness.
+
+\subsection{Data Cleaning}\label{data-cleaning}
+
+We implemented a cleaning pipeline in \texttt{clean.py} (see README for reproduction). Key steps: (1) Replace special codes 90/91/92 with \texttt{NA}; (2) Convert numeric codes to meaningful labels (e.g., Gender 1/2 $\to$ Male/Female); (3) Standardize column names to snake\_case; (4) Derive \texttt{age\_group} ($<$2 vs $\ge$2 years) and \texttt{citbi} from outcome variables. Judgment calls: we treat ``Suspected'' LOC as distinct from ``Yes'' to preserve clinical nuance; for stability check we perturb by merging ``Suspected'' $\to$ ``Yes''.
+
+\subsection{Data Exploration}\label{data-exploration}
+
+After cleaning, we explored variable distributions, missingness patterns, and relationships between PECARN predictors and ciTBI. The exploration motivates our three main findings below.
+
+\section{Findings}\label{findings}
+
+\begin{itemize}
+\item Present three interesting findings and produce a publication quality graphic for each along with a short caption of what each shows.
+\item Don't forget to appropriate label axes, titles
+\item Think carefully about use of color, labeling, shading, transparency, etc.
+\item Also interpret and provide an insightful discussion of what your figures show
+\end{itemize}
+
+\subsection{First finding: Age-dependent risk profiles}\label{first-finding}
+
+Risk factor prevalence and ciTBI association differ substantially between children under 2 years and those 2 years or older, validating the PECARN rule's age stratification (Figure~\ref{fig:finding1}).
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{finding1_age_stratification.png}
+  \caption{Age-stratified risk factor prevalence and ciTBI rates. Left: prevalence of PECARN predictors by age group. Right: ciTBI rate with vs.\ without each predictor.}
+  \label{fig:finding1}
+\end{figure}
+
+\subsection{Second finding: CT utilization paradox}\label{second-finding}
+
+CT utilization is high (over 35\%) while the proportion of scans that are positive for ciTBI is low, suggesting potential overuse (Figure~\ref{fig:finding2}). This motivates the need for decision rules to safely identify low-risk patients.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{finding2_ct_paradox.png}
+  \caption{CT utilization and yield by age group. High CT use contrasts with modest positive yield, indicating opportunity for guideline-based reduction.}
+  \label{fig:finding2}
+\end{figure}
+
+\subsection{Third finding: Risk factor co-occurrence}\label{third-finding}
+
+PECARN predictors co-occur and cluster; patients with more risk factors have higher ciTBI rates (Figure~\ref{fig:finding3}). The most common multi-factor combinations inform rule structure.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{finding3_risk_clustering.png}
+  \caption{Risk factor correlation, distribution of risk factor count, and ciTBI rate by number of factors.}
+  \label{fig:finding3}
+\end{figure}
+
+\subsection{Reality Check}\label{reality-check}
+
+We compared cleaned summary statistics (age distribution, GCS distribution, ciTBI rate) to Table~1 in Kuppermann et al.\ The cleaned data aligns with published benchmarks (e.g., ciTBI rate $\approx$ 0.4--0.5\%), supporting validity of our pipeline. Assumption: the PECARN paper reflects the same underlying study population.
+
+\subsection{Stability Check}\label{stability-check}
+
+We perturbed the judgment call on ``Suspected'' LOC: merge it into ``Yes'' (perturbed) vs.\ keep separate (original). Figure~\ref{fig:stability} shows the before-and-after distribution. The finding (that granularity matters) is robust; merging loses information about clinical uncertainty.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{stability_check_loc.png}
+  \caption{Stability check: original (3 categories) vs.\ perturbed (2 categories) LOC distribution.}
+  \label{fig:stability}
+\end{figure}
+
+\section{Modeling}
+
+\subsection{Implementation}
+
+We implement three models in \texttt{models.py}, invoked by \texttt{run.sh}: (1) \textbf{PECARN rule}---age-stratified, rule-based (Kuppermann et al.); (2) \textbf{Logistic regression}---same PECARN predictors, \texttt{class\_weight='balanced'}, threshold chosen to achieve 98\% sensitivity on training data; (3) \textbf{XGBoost}---\texttt{scale\_pos\_weight} for class imbalance, \texttt{max\_depth=4}, \texttt{n\_estimators=200}. All use 80/20 train-test split with \texttt{random\_state=42}.
+
+\subsection{Interpretability}
+
+The PECARN rule is fully interpretable: a checklist of risk factors. Logistic regression coefficients show relative contribution of each predictor. XGBoost is less interpretable; we recommend feature importance plots and SHAP for post-hoc explanation in clinical settings.
+
+\subsection{Stability}
+
+Under the stability-check perturbation (merge ``Suspected'' $\to$ ``Yes''), model predictions shift for affected patients. Sensitivity and specificity may change slightly; the PECARN rule remains robust because LOC is binary in the rule (present/absent). Logistic and XGBoost may show larger shifts where ``Suspected'' was previously treated distinctly.
+
+\section{Discussion}\label{discussion}
+
+Data size (43k patients) provided sufficient power for ciTBI (rare outcome) and stable model fitting. Challenges included high missingness in some variables and heterogeneity across 25 EDs. The three realms: (1) \textbf{Data/reality}---our cleaning and exploration; (2) \textbf{Algorithms/models}---PECARN, logistic, XGBoost; (3) \textbf{Future data/reality}---deployment, external validation. Data do not have a one-to-one correspondence with reality; visualization helps bridge that gap by making patterns interpretable.
+
+\section{Conclusion}\label{conclusion}
+
+We cleaned the PECARN TBI dataset, validated it against published benchmarks, and presented three findings that support age-stratified risk stratification and motivate CT-sparing decision rules. Our models (PECARN rule, logistic regression, XGBoost) are reproducible via \texttt{run.sh}. Reality and stability checks affirm our preprocessing choices. The analysis provides a foundation for stress-testing clinical decision rules in the final project.
+
+\section{Academic honesty statement}\label{academic-honesty-statement}
+
+I certify that the work in this report is my own and that all sources are properly cited. Academic honesty is necessary because research builds on trust; falsified or plagiarized work undermines scientific progress and harms patients who depend on evidence-based medicine.
+
+\section{Collaborators}\label{collaborators}
+
+None.
+
+\section{Bibliography}\label{bibliography}
+
+\begin{itemize}
+\item Kuppermann, N., Holmes, J. F., Dayan, P. S., \& al. (2009). Identification of children at very low risk of clinically-important brain injuries after head trauma. \textit{The Lancet}, 374(9696), 1160--1170.
+\end{itemize}
+
+\end{document}

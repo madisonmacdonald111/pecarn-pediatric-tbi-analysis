@@ -1,0 +1,350 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{todonotes}
+\usepackage{hyperref}
+\usepackage{hanging}
+\usepackage{enumitem}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+
+%make lists tighter
+\usepackage{enumitem}
+\setlist{nolistsep}
+
+%reduce spacing before and after section
+\usepackage{titlesec}
+\titlespacing\section{0pt}{0pt}{0pt}
+\titlespacing\subsection{0pt}{6pt}{0pt}
+\titlespacing\subsubsection{0pt}{1pt}{1pt}
+
+
+\usepackage{titling}
+\setlength{\droptitle}{-6em}
+
+\title{Lab 1 - PECARN TBI Data, STAT 214, Spring 2026}
+
+% submission must not contain your name
+% but feel free to make a version for yourself with your name on it
+\author{Anonymous}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\section{Introduction}\label{introduction}
+
+Every year, hundreds of thousands of children arrive at emergency departments with head injuries. Most of these kids are fine, maybe a bump, a bruise, some temporary confusion, but no serious brain damage. The problem, however, is that a small percentage do have clinically important traumatic brain injuries (ciTBIs) that require immediate intervention (e.g., neurosurgery, prolonged intubation, multi-night hospitalization, or in the worst cases, death). Therefore, the core challenge emergency physicians face is this: order a CT scan and expose the child to radiation with potential long-term cancer risks, or send them home and risk a missed diagnosis. 
+
+The PECARN (Pediatric Emergency Care Applied Research Network) study enrolled 43,904 children under 18 across 25 emergency departments with the goal of developing clinical decision rules to guide this exact CT decision. The resulting dataset includes detailed clinical assessments, injury characteristics, imaging decisions, and patient outcomes across two age groups (children under 2 years and those 2 years and older) each with their own validated prediction rule. While the original study successfully derived these rules, the raw data offers opportunities to go further and explore patterns that weren't the primary focus of Kuppermann et al. Overall, this analysis has four goals: rigorously clean the data while documenting every decision transparently, surface genuinely new patterns beyond what Kuppermann et al.\ established, validate the cleaned data against published results, and evaluate how learned predictive models compare to the original clinical decision rule. Section 2 covers data collection and cleaning, Section 3 presents three key findings with reality and stability checks, Section 4 develops and evaluates predictive models, and Sections 5 and 6 discuss limitations and conclude. 
+
+\section{Data}\label{data}
+
+The PECARN dataset contains one row per patient encounter, capturing clinical presentation at emergency department (ED) arrival (e.g., injury mechanism, loss of consciousness duration, physical exam findings like palpable skull fractures and altered mental status, physician imaging decisions, and patient outcomes), across 125 clinical and demographic variables. This makes it well-suited for exploring not just which variables predict serious injury but how they interact across age groups and injury types. The outcome variable is clinically important traumatic brain injury (ciTBI), defined as death from TBI, neurosurgical intervention, intubation for more than 24 hours for TBI, or hospitalization of two or more nights associated with TBI on CT scan. This is the right target for a prediction rule because it captures exactly the cases that cannot be missed while intentionally excluding minor findings that don't require intervention.
+
+The \textbf{raw} dataset's structure reflects the study's design. The primary analysis population consists of children with Glasgow Coma Scale (GCS) scores of 14-15, indicating minor head trauma, which accounts for 42,430 of the 43,399 patients in the \textbf{raw dataset}. The remaining 969 patients with GCS scores of 3-13 were enrolled but analyzed separately. Therefore, rather than dropping these rows, the cleaned dataset preserves them with an \texttt{in\_primary\_analysis} flag for easy filtering downstream.
+
+\subsection{Data Collection}\label{data-collection}
+
+The PECARN study prospectively enrolled children under 18 years old presenting within 24 hours of head trauma across 25 emergency departments between 2004 and 2006. Trained site investigators and other emergency department physicians recorded patient history, injury mechanism, and symptoms/signs on a standardized data form before knowing imaging results. The primary study population consisted of patients with GCS scores of 14-15 (minor head trauma), though patients with GCS scores of 3-13 were also enrolled and flagged separately, as described above.
+
+The variables captured vary in both type and reliability. Some are objective and internally consistent, e.g., patient age in years and months, and GCS component scores that must sum to a validated total. Others depend entirely on clinical judgment at the bedside, such as whether a child has altered mental status or a palpable skull fracture, assessments that are inherently harder to make reliably in young children who cannot verbally communicate. Moreover, some variables, like loss of consciousness duration, rely on parent or witness report rather than direct observation, introducing potential recall bias. Lastly, others like injury mechanism severity (coded as low, moderate, or high), are subjective categorizations that different physicians might assign differently for the same mechanism.
+
+The dataset also uses special codes to handle clinical edge cases. Specifically, code 91 (pre-verbal/nonverbal) marks questions that cannot be answered for very young or non-communicative children. For example, \texttt{has\_headache\_at\_ED = 91} for most patients under 2 since they cannot self-report pain. Additionally, code 92 (not applicable) marks sub-detail questions that are only meaningful given a prior positive response. For instance, \texttt{loss\_of\_consciousness\_duration = 92} when no loss of consciousness occurred in the first place. Lastly, for \texttt{has\_loss\_of\_consciousness\_history} specifically, a value of 2 indicates suspected but not confirmed, reflecting genuine uncertainty in witness accounts. 
+
+Finally, outcome data was collected through medical record review and standardized telephone follow-up of discharged patients between 7 and 90 days after the ED visit. If a missed injury was suggested at follow-up, medical records and imaging results were obtained to classify the outcome. This combination of prospectively collected clinical predictors and carefully documented outcomes is what makes the dataset valuable for both validating the existing clinical decision rule and exploring new patterns in pediatric head trauma.
+
+\subsection{Data Cleaning}\label{data-cleaning}
+
+My overall cleaning process follows the general four-step framework from Chapter 4 of \textit{Veridical Data Science}: learn about the data collection process, load and examine the data, create a cleaning action list, then execute. Each step informed the next. The full iterative exploration (including initial investigations, dead ends, and judgment call reasoning) is documented in \texttt{01\_cleaning.ipynb}. The final pipeline is implemented as a single importable function \texttt{clean\_data()} in \texttt{clean.py}, which takes the raw CSV as a pandas DataFrame and returns a fully cleaned version with all 12 steps applied in order. Three optional parameters allow key judgment calls to be varied for the stability checks performed later, i.e., \texttt{gcs\_threshold} (minimum GCS for primary analysis inclusion), \texttt{impute\_gcs} (whether to impute missing GCS components), and \texttt{fix\_ct\_tbi} (whether to correct the 9 depressed-fracture rows described below).
+
+
+\textbf{Step 1: Learning about the data before touching it}
+
+Before writing any cleaning code, the data documentation and Kuppermann et al.\ were read carefully to understand what each variable was supposed to capture. Several structural features were recorded at this stage that directly shaped every judgment call that followed: code 92 means (not applicable) for sub-detail variables and must be treated as \texttt{NaN}, code 91 means (pre-verbal/nonverbal) and is a clinically meaningful category that must not be treated as missing, and 0 is the documented (No) response for every binary clinical variable and is never a missing value. It was also noted that the dataset has an extensive network of parent-child variable relationships (13 in total, covering seizures, headache, vomiting, altered mental status, skull fractures, neurological deficits, trauma location, CT indications, and sedation reasons) where child variables only carry meaning when their parent condition is present. Finally, the observational unit is one patient ED visit, so each row must correspond to exactly one unique patient, which was confirmed later by the validation step.
+
+\textbf{Step 2: Rename columns and replace coded missing values}
+
+After loading the raw data, all 125 columns were renamed using a hand-built mapping file (\texttt{new\_col\_names.csv}) to human-readable descriptive names (e.g., \texttt{LocLen} $\rightarrow$ \texttt{loss\_of\_consciousness\_duration}), eliminating any ambiguity in downstream interpretation. Immediately after renaming, code 92 was globally replaced with \texttt{NaN} across all columns, since these  values represent (not applicable) and would otherwise silently corrupt any statistical operations. Code 91 was intentionally left untouched throughout, as it represents a clinically meaningful pre-verbal/nonverbal category, for example, \texttt{has\_headache\_at\_ED = 91} for a pre-verbal infant is valid and informative, not missing.
+
+\textbf{Step 3: Valid value range checking}
+
+A comprehensive \texttt{valid\_values} dictionary was built covering every column based on the documentation, then a \texttt{check\_invalid\_values()} sweep was run across the entire dataset. For the vast majority of columns, all values fell within their documented ranges. Three GCS exceptions were flagged:
+\begin{itemize}
+    \item \small \texttt{gcs\_eye\_score = 5} (valid range: 1--4): 2 rows. 
+    \begin{itemize}
+        \item \footnotesize Corrected to 4, adjusting the total down by 1.
+    \end{itemize}
+    \item \small \texttt{gcs\_verbal\_score = 0} (valid range: 1-5, where 
+    1 = ``None''): 1 row. 
+    \begin{itemize}
+        \item \footnotesize Corrected to 1, adjusting the total up by 1.
+    \end{itemize}
+    \item \small \texttt{gcs\_verbal\_score = 6} (valid range: 1-5): 1 row. 
+    \begin{itemize}
+        \item \footnotesize Corrected to 5, adjusting the total down by 1.
+    \end{itemize}
+\end{itemize}
+
+These are clear data entry errors, i.e., the values fall outside the documented valid range and have no clinical meaning. The judgment call to correct to the nearest boundary value is supported by the fact that none of these corrections changed the GCS category (14-15 vs.\ 3-13) the patient belonged to, confirming the intended value was close to the recorded one. A zero-as-invalid check was also run on columns where 0 carries no meaning (e.g., \texttt{injury\_mechanism}, \texttt{gcs\_eye\_score}), and no invalid zeros were found. One interesting case flagged however was \texttt{patient\_age\_months = 0}, which on investigation corresponded entirely to legitimate newborns (\texttt{patient\_age\_years = 0}, \texttt{patient\_age\_under\_2yr = 1}).
+
+\textbf{Step 4: GCS internal consistency}
+
+With valid ranges confirmed, GCS internal consistency was checked in two ways. First, rows where exactly one component score was missing but the total and the other two components were present were identified as candidates for imputation: missing = total $-$ sum of the other two. This imputation is only valid if the three components sum exactly to the total, which was verified on 42,055 fully complete rows, and held in every case. Two rows were imputed this way. Second, rows where all three components were present but their sum disagreed with the recorded total were corrected by re-deriving the total from the components (the judgment call being that individually assessed component scores are more trustworthy than the summed total, which is more prone to transcription error). This resolved 1,344 inconsistent rows, leaving zero after cleaning. Finally, \texttt{gcs\_category} was re-derived from the corrected totals to ensure it remained consistent.
+
+\textbf{Step 5: Domain-specific relational checks}
+
+Two types of relational inconsistencies were investigated. 
+\begin{enumerate}
+    \item \textit{Parent-child conditional validity:} Using the 13 parent-child relationships identified in Step 1, a function named \texttt{check\_conditional\_validity()} was built and ran across all child variables to confirm that no sub-detail variable carried a value when its parent condition was absent. This sweep surfaced two cases worth investigating further. First, 8 rows appeared to violate the \texttt{head\_ct\_performed\_in\_ed} $\rightarrow$ \texttt{ct\_shows\_tbi} relationship, but on inspection these were not errors: \texttt{head\_ct\_performed\_in\_ed = 0} simply means the CT was not performed in the emergency department (ED) specifically, and cross-referencing with \texttt{head\_ct\_performed} confirmed all 8 patients did receive a CT elsewhere. No action was taken. Second, \texttt{ct\_shows\_tbi} flagged 500 apparent violations against the 18 individual CT finding columns. Investigation revealed the cause: per the study definition, a skull fracture only qualifies as TBI on CT when it is depressed by at least the width of the skull itself. Of those 500 rows, 491 had \texttt{skull\_fracture\_depressed = 0} and were correctly coded. The remaining 9 had \texttt{skull\_fracture\_depressed = 1} but \texttt{ct\_shows\_tbi = 0}, which is a genuine data entry error. These 9 rows were corrected to \texttt{ct\_shows\_tbi = 1}, implemented as \texttt{fix\_ct\_shows\_tbi()} in the main pipeline.
+    \item \textit{Domain-specific logical violations:} Three additional cross-column rules were checked based on clinical logic from Kuppermann et al. All three passed with zero violations on the original dataset and are implemented in \texttt{validate\_data()} and \texttt{repair\_data()} for use on future data: 
+    \begin{itemize}
+        \item \small (1) A depressed skull fracture logically requires a palpable fracture (\texttt{skull\_fracture\_depressed = 1} $\rightarrow$ \texttt{has\_palpable\_skull\_fracture} must = 1).
+        \item \small (2) \texttt{hospitalized\_2plus\_nights\_with\_positive\_ct = 1} requires both \texttt{hospitalized\_2plus\_nights\_head\_injury = 1} and \texttt{ct\_shows\_tbi = 1} by definition. Any violations would have the compound variable set to \texttt{NaN} since it is impossible to determine which component is wrong.
+        \item \small (3) \texttt{head\_ct\_performed\_in\_ed = 1} requires \texttt{head\_ct\_performed = 1}, with violations corrected by setting the overall CT flag to 1.
+    \end{itemize}
+\end{enumerate}
+
+Age consistency was also verified: \texttt{patient\_age\_months // 12} was confirmed to equal \texttt{patient\_age\_years} across all rows with both values present. A large number of \texttt{patient\_age\_months = 91} initially appeared suspicious (91 is the pre-verbal code elsewhere), but confirmed as legitimate: 91 months = 7 years 7 months, consistent with all corresponding \texttt{patient\_age\_years = 7} entries.
+
+\textbf{Step 6: Missing values and targeted imputation}
+
+A missing value analysis was conducted across all 125 columns of the cleaned dataset. The highest-missingness columns (95-99\%) are all child variables that are only populated for the rare patients who had the parent condition (e.g., \texttt{seizure\_timing}, \texttt{skull\_fracture\_depressed}, \texttt{has\_basilar\_hemotympanum}). So, this missingness is structurally meaningful, not random, i.e., the parent variable already encodes whether the condition was present, and \texttt{NaN} is automatically excluded from statistical operations. Therefore, no columns were dropped and no (not applicable) category was created, since doing so would add no information. 
+
+Notably though, two targeted imputations were made. First, the global replacement of code 92 with \texttt{NaN} in Step 2 incidentally wiped the legitimate \texttt{patient\_number = 92} entry along with all true (not applicable) values. This was recovered in Step 8 of \texttt{clean.py} by identifying the gap in the sequential 1-43,399 range. Second, missing \texttt{patient\_age\_months} was imputed to 0 only for patients with \texttt{patient\_age\_years = 0} (confirmed newborns), since 0 is the only value consistent with the known age in years. For all other missing age-in-months values, no imputation was made since, e.g., 1 year-old could be anywhere from 12-23 months. 
+
+\textbf{Step 7: Outliers}
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.5\textwidth, height=0.5\textheight, keepaspectratio]{lab1/documents/dslc_documentation/other_figures/age_distribution.png}
+    \caption{\footnotesize Age distribution of participants.}
+\end{figure}
+
+Age distributions were examined with the histograms and boxplots. As shown in \textcolor{blue}{Figure 1}, above both \texttt{patient\_age\_years} and \texttt{patient\_age\_months} have right-skewed distributions consistent with the study population (younger children dominate, as expected given the heightened radiation sensitivity concerns that motivated the study). No out-of-range ages were found (maximum = 215 months = 17 years 11 months). For all other bounded numeric variables (GCS total score, patient number) statistical outlier methods like IQR are not meaningful because every value has a documented valid range. The out-of-range checking in \texttt{clean.py} was therefore the appropriate and sufficient approach for those variables.
+
+\textbf{Step 8: Data types and primary analysis flag}
+
+All categorical and binary yes/no variables were converted from \texttt{float64} to pandas \texttt{category} dtype, making the valid coding explicit and preventing operations like averaging from producing meaningless results. True numeric variables (\texttt{patient\_age\_months}, \texttt{patient\_age\_years}, \texttt{patient\_number}, \texttt{gcs\_total\_score}) were converted to nullable \texttt{Int64} dtype to support \texttt{NaN} without silent float conversion. A binary \texttt{in\_primary\_analysis} flag (integer, not category, to support downstream filtering) was added, where 1 indicates \texttt{gcs\_total\_score} $\geq$ 14 and 0 indicates the 969 patients with GCS 3-13 enrolled separately. Rather than dropping these rows, this flag preserves the full dataset while enabling easy filtering to the primary population used in all analyses done later. As an immediate sanity check, ciTBI rates were computed within the primary analysis population by age group, yielding 0.91\% for under-2 and 0.88\% for 2-and-older: both within the ranges reported in Kuppermann et al.\ (0.86--1.13\% and 0.85--0.98\% respectively), confirming that the cleaning pipeline had not inadvertently distorted the underlying data.
+
+\textbf{Step 9: Validation}
+
+After all cleaning steps, \texttt{validate\_data()} was run and confirmed zero remaining violations across all five check categories: valid value ranges, conditional validity, age consistency, age category, and the three domain-specific relational rules. A duplicate check confirmed that every patient number is unique (each row represents exactly one patient visit). For robustness on future datasets, \texttt{repair\_data()} is also provided as an optional utility that can automatically fix any violations \texttt{validate\_data()} flags, i.e., re-running GCS corrections, clearing invalid child variables, resolving age inconsistencies, and applying the domain-specific relational repairs, followed by a second \texttt{validate\_data()} pass to confirm resolution. Note that this last function is not needed for the original PECARN data, which passes all checks cleanly after \texttt{clean\_data()} is applied.
+
+
+\subsection{Data Exploration}\label{data-exploration}
+
+Before diving into the three main findings, it helps to understand what this dataset actually looks like at baseline, e.g., the typical patient, the distribution of key clinical variables, and the rates that make certain patterns genuinely surprising when they emerge later.
+
+\textbf{The Typical Patient}
+
+The age distribution was already examined during cleaning (\textcolor{blue}{Figure 1}) and is heavily right-skewed, with nearly half of patients (46.7\%) under age 5 and a median age of 5 years. The approximately 25\% of patients under age 2 directly motivated the study's decision to develop separate prediction rules for each age group. Males also outnumber females roughly 60/40, consistent with known gender differences in pediatric injury rates. Race and ethnicity distributions are worth noting as a limitation (expanded on in later discussion section), namely the study population skews heavily toward White (54\%) and Black (40\%) patients, and ethnicity data has substantial missingness (37\% of patients have no recorded ethnicity). 
+
+
+\textbf{GCS Scores: Nearly Everyone Looks Fine}
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.6\textwidth, height=0.6\textheight, keepaspectratio]{lab1/documents/dslc_documentation/other_figures/gcs_component_distribution.png}
+    \caption{\footnotesize GCS Component Scores.}
+\end{figure}
+
+\textcolor{blue}{Figure 2} above shows the distribution of GCS component scores across eye opening, verbal response, and motor response. All three plots tell the same story: the overwhelming majority of patients scored at the maximum value for each component (\texttt{gcs\_eye\_score = 4}, \texttt{gcs\_verbal\_score = 5}, \texttt{gcs\_motor\_score = 6}). This is exactly what we'd expect for a population enrolled primarily with \texttt{gcs\_total\_score = 14-15}. The small bars at lower scores correspond to the 1,346 patients with \texttt{gcs\_total\_score = 14} and the 969 GCS 3-13 patients enrolled separately.
+
+Note that the clinical implication is important here. Specifically, GCS score alone cannot be the primary screening tool in this population, because nearly everyone has a perfect or near-perfect score. The clinical decision rules need to incorporate other signs and symptoms to catch the rare serious injuries hiding in an otherwise normal-appearing population, which is precisely what Kuppermann et al.\ set out to do.
+
+\textbf{Outcome Variables: Rare but Consequential}
+
+\textcolor{blue}{Figure 3} below shows the distribution of six key outcome variables across the primary analysis population. The pattern is consistent, namely that outcomes are rare. Only 376 patients (0.9\%) had a ciTBI, neurosurgery was performed on 60 patients (0.1\%), and hospitalization for 2+ nights occurred in 469 cases (1.1\%). Notably, no deaths due to TBI occurred in the primary analysis population (GCS 14-15). All in all, this extreme rarity of the outcome (roughly 99\% of patients have no ciTBI) is the central challenge of the clinical decision problem. Any prediction rule must achieve near-perfect sensitivity to avoid missing the handful of critical cases, while maintaining enough specificity to avoid scanning all, approximately, 43,000 patients unnecessarily. The modeling section returns to this tradeoff.
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.5\textwidth, height=0.6\textheight, keepaspectratio]{lab1/documents/dslc_documentation/other_figures/outcome_var_distributions.png}
+    \caption{\footnotesize Distributions of key outcome variables.}
+\end{figure}
+
+Finally, notice that the \texttt{ct\_shows\_tbi} variable stands out in this figure. Its large missing bar does not represent data quality issues, but rather the 64.7\% of patients who never received a CT scan. Among those who were scanned, most were negative with a small positive group. This structure reflects the study's design, i.e., CT was ordered at physician discretion, not universally, so missingness here is meaningful and expected.
+
+\textbf{Injury Mechanisms: Falls Dominate, But Risk Is Uneven}
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.5\textwidth, height=0.6\textheight, keepaspectratio]{lab1/documents/dslc_documentation/other_figures/mechanism_distributions.png}
+    \caption{\footnotesize Distributions of injury mechanisms and severity.}
+\end{figure}
+
+\textcolor{blue}{Figure 4} above shows the distribution of injury mechanisms and physician-assigned severity across the dataset. Falls from elevation (mechanism 8) are by far the most common, accounting for 27.5\% of all injuries. Falls from standing/walking/running (11.0\%) and motor vehicle crashes (8.8\%) follow. Sports injuries account for 7.0\% of cases. The mechanism severity distribution reveals that roughly 68\% of all injuries were classified as moderate severity, with low (17\%) and high (15\%) severity much less common. This severity coding was assigned by physicians based on mechanism type, but as Finding 1 will show, physician-assigned severity does not always align with actual ciTBI risk. The most common mechanisms are not necessarily the most dangerous, and some less frequent mechanisms carry surprisingly high ciTBI rates that could be overlooked if physicians rely on base rates alone.
+
+\textbf{Setting the Stage}
+
+These exploratory summaries establish the baseline: in a minor head trauma population where serious injuries are rare (0.9\% ciTBI rate), most patients have normal neurological exams, falls dominate the mechanism distribution, and the clinical challenge is identifying a small number of critical cases among about 42,000 mostly-fine children. The three findings that follow go beyond these basic exploratory figures to reveal patterns not obvious from variables in isolation, and with direct implications for the CT scanning decision. 
+
+\section{Findings}\label{findings}
+
+\subsection{First finding: The Mechanism Severity Paradox}\label{first-finding}
+
+See the interactive version here:  
+\href{https://drive.google.com/file/d/1yuHbP5oDKsCgjWVhPhkrpf99ePWDk_SC/view?usp=sharing}{\textcolor{blue}{CLICK HERE}}\footnote{\footnotesize Interactive figure hosted on Google Drive (shouldn't, but may show my name). Click the link, then select the download icon ($\downarrow$) to download the file, and click the arrow icon in your browser's download bar to open it immediately in a new tab.}
+
+\textit{\footnotesize{(In the interactive version, hovering over any point displays the exact ciTBI rate, sample size, number of ciTBI cases, and confidence interval bounds for that mechanism)}}
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.55\textwidth]{lab1/documents/main_figures/finding1_mechanism_risk_static.png}
+    \caption{\centering \footnotesize Clinically important TBI risk by injury mechanism (full cleaned dataset, $n = 43{,}399$). Point size and color intensity represent sample size; error bars show 95\% confidence intervals. The dashed line marks the overall ciTBI rate (0.9\%). Non-motorized bicycle crashes show the highest ciTBI rate (7.5\%), exceeding motor vehicle crashes (4.2\%), with falls from less than 3 feet (5.3\%) also substantially above the population average.}
+    \label{fig:finding1-mechanism-risk}
+\end{figure}
+
+\textcolor{blue}{Figure 5 above} plots ciTBI rate against injury mechanism for all 43,399 enrolled patients. Point size and color intensity both reflect sample size: larger, darker points come from mechanisms with more observed cases and carry narrower confidence intervals, so they should be weighted more heavily in clinical interpretation. Error bars are correspondingly wide for rare mechanisms (e.g., motorized bikes, $n=556$) and tight for common ones (e.g., falls from elevation, $n=11{,}883$). Note that these rates are computed on the full raw, but cleaned, dataset ($n = 43{,}399$), including the 969 GCS 3--13 patients analyzed separately elsewhere in this report. Their inclusion slightly inflates the absolute rates, but the rank ordering of mechanisms is consistent when the analysis is restricted to the primary population alone. As demonstrated in this figure, the data reveals a striking disconnect between perceived injury severity and actual ciTBI risk. Non-motorized bicycle crashes (typically considered moderate-risk) show the highest ciTBI rate at about 7.5\%, exceeding both motorized bike crashes (6.83\%) and motor vehicle crashes (4.17\%). Similarly, falls from less than 3 feet (often dismissed as trivial) carry a 5.33\% ciTBI rate, substantially above the population average of 0.9\%. Meanwhile, motor vehicle crashes, often perceived as the most dangerous mechanism, rank fourth. Falls from elevation (the most \textit{common} mechanism in the dataset at approximately 27\% of all cases) carry only a 1.44\% ciTBI rate, just above the population average.
+
+This finding has direct clinical implications. The unexpectedly high rate for non-motorized bikes likely reflects a combination of helmet non-use, high-speed crashes, and the biomechanics of being thrown from a bike onto a hard surface (i.e., forces that may be substantial even without a motorized vehicle involved). More broadly, a child arriving after a bicycle crash carries higher average brain injury risk than a child arriving after a motor vehicle crash, even though the latter is intuitively perceived as more serious. Critically, this finding also supports why the PECARN study needed a multi-factor clinical decision rule rather than a simple mechanism-based triage. For instance, a rule like scan kids in car crashes, would miss the majority of serious injuries occurring through seemingly lower-risk mechanisms. Additionally, physician-assigned severity (low/moderate/high), shown in the Data Exploration section to classify 68\% of all injuries as moderate, does not cleanly separate high-risk from low-risk mechanisms, and this figure illustrates exactly why.
+
+\newpage
+\subsection{Second finding: Age-Dependent Symptom Prediction}\label{second-finding}
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.5\textwidth]{lab1/documents/main_figures/finding2_age_symptom_slopes.png}
+    \caption{\centering \footnotesize Age-dependent predictive power of two clinical signs across the primary analysis population ($n = 42{,}430$, GCS 14-15). Risk ratios show the fold-increase in ciTBI risk when each sign is present versus absent. Skull fracture prediction declines from 37.1x in infants to 8.1x in adolescents, while vomiting prediction increases from 1.4x to 5.6x.}
+    \label{fig:finding2-age-mechanism-streamgraph}
+\end{figure}
+
+\textcolor{blue}{Figure 6 above} presents two bar charts showing risk ratios (fold-increase in ciTBI risk when a sign is present versus absent) across four age groups in the primary analysis population. Color intensity reflects the magnitude of predictive power, with darker bars indicating stronger prediction. The left panel shows palpable skull fracture (declining predictive power with age, red gradient) and the right panel shows vomiting (increasing predictive power with age, green gradient). Note that unlike Finding 1, this analysis is restricted to the primary analysis population ($n = 42{,}430$, GCS 14-15), as including GCS 3-13 patients pulls in more severely injured children and inflates risk ratios in ways that misrepresent the clinical population of interest.
+
+The finding is that the same clinical sign can have dramatically different predictive value depending on patient age, challenging the assumption that symptoms should be weighted uniformly across all pediatric patients. Palpable skull fracture shows a clear age-dependent decline: in infants ($<$2 years), its presence increases ciTBI risk by 37.1x, but by adolescence (13-17 years) the same finding increases risk by only 8.1x. This likely reflects the fact that infant skulls are softer and more pliable than older children's, so a palpable fracture in a baby signals much greater force and severity than the same finding in a teenager whose skull has fully hardened. Vomiting however shows the opposite pattern. In infants, vomiting increases ciTBI risk by only 1.4x, consistent with how common vomiting is in this age group from non-traumatic causes. In adolescents, vomiting increases risk by 5.6x, i.e., a much stronger red flag, precisely because vomiting is far less common at baseline in this age group. These age-dependent differences also help explain why the Kuppermann prediction rules are separated by age ($<$2 years vs.\ $\geq$2 years), with different predictors weighted differently in each group. In practice, this means emergency physicians need age-specific mental models, for instance from this figure we can see that skull fracture demands particular attention in infants, while post-traumatic vomiting is more concerning in older children and adolescents.
+
+\subsection{Third finding: The Loss of Consciousness (LOC) Duration Cliff}\label{third-finding}
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.4\textwidth]{lab1/documents/main_figures/finding3_loc_duration_cliff.png}
+    \caption{\centering \footnotesize ciTBI rate by loss of consciousness duration among 4,830 patients with LOC history (full enrolled dataset). Point size scaled to sample size. A sharp non-linear threshold emerges at 5 minutes: ciTBI risk remains relatively stable below 5 minutes (1.3\%-4.9\%) then jumps 7-fold to 33.7\% for LOC $>$ 5 minutes, revealing a critical clinical cutoff.}
+    \label{fig:finding3-loc-duration-cliff}
+\end{figure}
+
+\newpage
+
+\textcolor{blue}{Figure 7 above} plots ciTBI rate against the four LOC duration categories among the 4,830 enrolled patients with a LOC history, where the 3,294 that had a recorded duration category contribute to the figure. Point size is scaled to sample size. Notably, this finding uses the full enrolled dataset rather than the primary analysis population, because the cliff effect is driven precisely by the GCS 3-13 patients concentrated in the $>$5 minute group, thus filtering them out would suppress the very cases that demonstrate the threshold and under-represent the true clinical risk of prolonged LOC. The figure reveals a striking non-linear relationship between LOC duration and ciTBI risk. For brief LOC ($<$5 seconds), the ciTBI rate is 1.3\% (barely above the population baseline of 0.9\%). This rate stays relatively flat through moderate durations: 1.8\% for 5-60 seconds, rising slightly to 4.9\% for 1-5 minutes. Then at the 5-minute threshold, the rate jumps to 33.7\% (a 7-fold increase from the prior category), meaning one in three patients with LOC lasting more than 5 minutes has a clinically important brain injury.
+
+Importantly, this pattern is counterintuitive. A gradual relationship would be expected, where longer LOC simply translates to higher risk. Instead, there is essentially no meaningful difference between a 10-second blackout and a 4-minute period of unconsciousness, followed by a sudden cliff once the 5-minute mark is crossed. The $>$5 minute group is smaller (n=326), but a 7-fold jump is too large to dismiss as just noise. The cliff likely reflects the distinction between transient concussive events (i.e., brief LOC that resolves quickly and leaves no lasting structural damage) versus more serious injuries, where prolonged unconsciousness signals severe underlying trauma. This distinction explains why the Kuppermann prediction rules treat LOC duration as a categorical threshold rather than a continuous variable. Overall, for emergency physicians, the implication is clear: brief LOC warrants evaluation, but LOC exceeding 5 minutes is a red flag that demands immediate CT imaging and close monitoring.
+
+\subsection{Reality Check}\label{reality-check}
+
+The most natural reality to compare our cleaned data against is the published Kuppermann et al.\ (2009) article itself. Since the PECARN dataset is the data that the study was conducted on, our cleaned data should reproduce the key statistics reported in the paper. If it does not, that is a signal that our cleaning pipeline introduced distortions somewhere along the way. The core assumption underlying this check is that the published article's numbers are correct and serve as ground truth. This is a reasonable assumption here because Kuppermann et al.\ was a large prospective study with rigorous quality assurance, double data entry, and independent outcome verification. The check is useful because it is objective, i.e., there is no judgment involved in comparing a number, either it matches or it does not. Note that the vomiting and AMS ranges were estimated by reading across the under-2 and 2-and-older columns in Table 1 of the article, not from a single combined figure, so treat those comparisons as approximate.
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.35\textwidth, height=0.4\textheight, keepaspectratio]{lab1/documents/dslc_documentation/other_figures/reality_check_table.png}
+    \caption{\footnotesize Reality check on cleaned data.}
+\end{figure}
+
+As shown in \textcolor{blue}{Figure 8} above, the cleaned data passes the reality check across all 12 key metrics. Several matches are exact to the decimal (CT scan rate: 35.3\%, palpable skull fracture rates by age group), and the rest fall comfortably within the article's reported ranges. The one minor discrepancy worth noting is population size: our primary analysis population is 42,430 versus the article's 42,412. This 18-patient difference is entirely explained by the 20 rows we dropped for missing ciTBI outcomes during preprocessing, 18 of which fell within the primary analysis population. The article handled these slightly differently, but the difference is negligible and does not affect downstream results. Overall, this reality check gives us confidence that the cleaning pipeline has not inadvertently distorted the underlying data. The 0.9\% ciTBI rate, 60 neurosurgeries, and how often key clinical signs appear across age groups all reproduce cleanly, which means the three findings and the modeling results that follow are built on a solid foundation.
+
+\subsection{Stability Check}\label{stability-check}
+
+To test whether Finding 2 holds up under a reasonable perturbation, the \texttt{gcs\_threshold} judgment call in \texttt{clean\_data()} was varied from the default value of 14 to 13, expanding the primary analysis population to include the 305 patients with GCS = 13 who were otherwise analyzed separately. This is a genuine judgment call: the GCS 14 cutoff was chosen to match Kuppermann et al., but one could reasonably argue that GCS 13 patients with minor head trauma still belong in the same analysis. The perturbed dataset was generated by running \texttt{python code/clean.py "data/TBI PUD 10-08-2013.csv" 13}, expanding the primary population from 42,430 to 42,735 patients. \textcolor{blue}{Figure 9} shows the before (GCS $\geq$14) and after (GCS $\geq$13) risk ratios for palpable skull fracture and vomiting across all four age groups, where solid colored bars show the original finding and hatched gray bars show the perturbed version.
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.5\textwidth, height=0.6\textheight, keepaspectratio]{lab1/documents/dslc_documentation/other_figures/stability_check_finding2.png}
+    \caption{\footnotesize Stability check on Finding 2.}
+\end{figure}
+
+As demonstrated in \textcolor{blue}{Figure 9} above, the finding is largely stable. Vomiting's increasing-with-age pattern is essentially unchanged across all four groups (1.4x, 3.3x, 3.5x, 5.6x vs.\ 1.4x, 3.5x, 3.8x, 5.9x), with differences well within noise. Skull fracture's decreasing-with-age pattern also holds in both versions, with infants and young children still showing the  strongest predictive signal by a wide margin. The one notable shift is the 6-12 year skull fracture group, which jumps from 4.3x to 10.8x under the perturbation. This makes sense: GCS 13 patients are disproportionately concentrated in older age groups and are more likely to have serious injuries, so including them inflates the skull fracture risk ratio for that group specifically. Importantly, this is not a failure of the finding but rather a confirmation of why the GCS $\geq$14 cutoff was the right population choice in the first place. All in all, the two key patterns, skull fracture predictive power declining with age and vomiting predictive power increasing with age, survive the perturbation intact.
+
+\section{Modeling}
+
+\subsection{Implementation}
+
+Three classification models were implemented to predict whether a patient has a clinically important traumatic brain injury (ciTBI): the PECARN
+Clinical Decision Rule (CDR) from Kuppermann et al.\ (2009), a logistic regression, and a random forest. All three models were fit on the same \textit{primary analysis population}, i.e., the 42,412 patients with a Glasgow Coma Scale (GCS) score of 14 or 15, no confounding pre-existing conditions, and a known ciTBI outcome. This matches the population studied in Kuppermann et al.\ and excludes the 969 patients flagged \texttt{in\_primary\_analysis = 0} (those severely impaired, intubated, or had incomplete outcome data). Patients with a missing ciTBI label ($n = 20$) were also dropped since they could not contribute to any supervised learning task. Before fitting any model, ten binary predictor variables were derived from the cleaned data to encode the CDR's clinical assessment criteria. 
+
+These derivations required several preprocessing judgment calls. Loss of consciousness history encoded both confirmed (value 1) and suspected or unwitnessed (value 2) episodes as positive, since the CDR makes no distinction between them. Palpable skull fracture treated both confirmed (value 1) and indeterminate (value 2) findings as positive (a conservative choice consistent with the goal of minimizing missed diagnoses). Non-frontal scalp hematoma was flagged if any of the occipital, parietal, or temporal location indicators were positive, per the CDR's specification. Missing values for acting normally and altered mental status were treated as absent (0) on the assumption that clinicians would have recorded them if present.
+
+\begin{table}[h]
+\centering
+\caption{\footnotesize Model performance on primary analysis population ($n = 42{,}412$,
+376 ciTBI cases). Sensitivity is the main clinical metric.\emph{\footnotesize \textbf{ Note that no train-test split was performed}. With only 376 positive cases in a population of 42,412, holding out a test set would leave too few ciTBI cases to train a stable model, particularly for the random forest with its cross-validated threshold selection. Instead, model stability is assessed through the GCS threshold perturbation in the later section, thereby following the same approach used in Kuppermann et al., who also evaluated their rule on the full derivation cohort. \\}}
+\label{tab:model-metrics}
+\resizebox{0.5\textwidth}{!}{
+\begin{tabular}{lccccccc}
+\hline
+\textbf{Model} & \textbf{Sensitivity} & \textbf{Specificity} &
+\textbf{PPV} & \textbf{NPV} & \textbf{TP} & \textbf{FN} & \textbf{FP}\\
+\hline
+PECARN CDR          & 96.8\% & 56.6\% & 2.0\% & 99.95\% & 364 & 12 & 18253 \\
+Logistic Regression & 76.9\% & 84.1\% & 4.1\% & 99.75\% & 289 & 87 & 6685 \\
+Random Forest       & 94.9\% & 65.5\% & 2.4\% & 99.93\% & 357 & 19 & 14515 \\
+\hline
+\end{tabular}}
+\end{table}
+
+\subsubsection*{Model 1: Clinical Decision Rule (Kuppermann et al., 2009)}
+
+The PECARN CDR is a rule-based classifier with no free parameters, it is not fitted to data but rather applied exactly as described in Kuppermann et al. Because ciTBI risk differs substantially by developmental stage, the CDR uses two separate decision trees stratified by age: one for children under two years old and one for children two years and older. For children \textit{under two}, the rule first checks three high-risk predictors that warrant immediate CT: GCS below 15, altered mental status, and palpable or indeterminate skull fracture. If none of those are present, four intermediate-risk predictors place a child in an observation category: a non-frontal scalp hematoma, loss of consciousness lasting five+ minutes, a severe injury mechanism, or a parent reporting the child is not acting normally. For children \textit{two and older}, the analogous high-risk predictors are GCS below 15, altered mental status, and signs of a basilar skull fracture. Intermediate predictors are any loss of consciousness (regardless of duration), vomiting, a severe injury mechanism, and severe headache. Patients flagged by either tier are classified as CT-recommended (predicted positive). Patients with no risk factors are classified as CT-not indicated (predicted negative). Observation-tier patients are treated conservatively as positive because in a clinical screening context the cost of a missed diagnosis far outweighs the cost of an unnecessary scan. The CDR has no hyperparameters to tune. As shown in \textcolor{blue}{Table 1} above, applied to the full modeling population, the CDR achieves 96.8\% sensitivity and 56.6\% specificity, flagging 18,253 healthy children for CT unnecessarily.
+
+\subsubsection*{Model 2: Logistic Regression}
+
+The second model is an L2-regularized logistic regression fit on the same primary analysis population. Unlike the rule-based CDR, logistic regression is a learned model. A patient is classified as positive if that predicted probability exceeds a decision threshold. I used the same 10 binary CDR predictors as features, plus a binary age indicator (\texttt{is\_under\_2} = 1 if under two, 0 otherwise). Rather than fitting separate models by age group as the CDR does, I trained a single model on the full population with age as a feature. This judgment call is justified by the data: ciTBI rates are nearly identical across age groups (0.91\% under-2 vs.\ 0.88\% two-and-older), and splitting would reduce the under-2 training set to only 98 positive cases, i.e., too few for a stable separate model. Moreover, three design choices required judgment calls. First, L2 regularization with $C = 1.0$ (sklearn default) was applied. L2 shrinks all coefficients toward zero without zeroing any out, which is appropriate here since every predictor has clear domain justification for inclusion and we do not want sparsity to inadvertently discard a clinically meaningful variable. Cross-validation over $C \in \{0.01, 0.1, 1.0, 10.0\}$ confirmed that cross-validated recall was stable at approximately 0.78 across all values, so the model is not sensitive to this choice. Second, \texttt{class\_weight = balanced} automatically up-weights the minority class (ciTBI = 1) by a factor that reflects how lopsided the classes are (roughly 113 healthy patients for every 1 ciTBI case). Without this correction, the model would be incentivized to predict negative for nearly every patient and still achieve over 99\% accuracy, i.e., a useless model that catches no true cases. The balanced weighting shifts the decision boundary to prioritize sensitivity, consistent with the clinical goal of minimizing missed diagnoses. Third, no missing value imputation was needed, since no CDR-derived predictors have missing values after preprocessing. As shown in \textcolor{blue}{Table 1} above, on the primary analysis population, the logistic regression achieved 76.9\% sensitivity (289 of 376 ciTBI cases caught), 84.1\% specificity, a PPV of 4.1\%, and an NPV of 99.75\%. Compared to the CDR, this represents a meaningful tradeoff: logistic regression flags far fewer healthy patients for CT (6,685 false positives vs.\ 18,253 for CDR), but misses substantially more true ciTBI cases (87 false negatives vs.\ 12). From a clinical standpoint, the 87 missed cases are a serious concern. A screening rule that fails to flag 23\% of children with clinically important TBI would be difficult to justify in practice, even if it does spare many from unnecessary radiation exposure.
+
+\newpage
+\subsubsection*{Model 3: Random Forest with Sensitivity-Targeted Threshold}
+
+The third model is a random forest, i.e., simply put, an ensemble of decision trees that each vote on a prediction, with the majority vote winning. The motivation for this as my third model choice follows directly from the first two models: the CDR achieves near-perfect sensitivity but poor specificity, and the logistic regression recovers specificity but misses 87 true cases. So, the question is whether a more flexible model can recover sensitivity without sacrificing all of those specificity gains. Random forests are a good candidate because, unlike the linear logistic regression, they can capture nonlinear interactions between predictors, for example, the combination of altered mental status \textit{and} a severe injury mechanism may be more predictive than either alone, and a tree ensemble can learn this directly from the data. I used the same 11 features as logistic regression and fit 200 trees with \texttt{class\_weight = balanced} for the same imbalance reasons. The key hyperparameter requiring a judgment call was \texttt{min\_samples\_leaf}, which controls how much individual trees overfit to the rare positive cases. Cross-validation over $\{1, 2, 5, 10, 20, 30, 50\}$ showed that \texttt{min\_samples\_leaf = 10} gave the best balance of cross-validated sensitivity and specificity at the default threshold and was chosen as a result. The more consequential design choice was the decision threshold. The standard practice of predicting positive when predicted probability exceeds 0.5 produced sensitivity of only about 75\% (no meaningful improvement over logistic regression). So, instead, I selected the threshold via 5-fold cross-validation, identifying the lowest threshold achieving at least 95\% sensitivity in each training fold, then evaluated that threshold on the held-out fold. The chosen thresholds were 0.26, 0.26, 0.28, 0.29, and 0.29 across the five folds (remarkably stable), which gives confidence that this threshold is not overfit to any particular split. Thus, the final threshold was set to 0.27, the nearest round value to the cross-validated mean of 0.276. As shown in \textcolor{blue}{Table 1} above, on the primary analysis population, the random forest achieved 94.9\% sensitivity (357 of 376 ciTBI cases caught), 65.5\% specificity, a PPV of 2.4\%, and an NPV of 99.93\%. This places it squarely between the CDR and the logistic regression on every metric: it misses 19 ciTBI cases compared to the CDR's 12 and the logistic regression's 87, and flags 14,515 healthy patients for CT compared to the CDR's 18,253 and the logistic regression's 6,685. Overall, the random forest model answers the question we started with, namely a learned model \textit{can} recover CDR-level sensitivity, but not without cost. Getting from 76.9\% to 94.9\% sensitivity required accepting roughly 7,800 additional false positives relative to logistic regression. All in all, whether that tradeoff is worth it depends entirely on how a clinician weighs radiation exposure against the risk of a missed diagnosis, a question the data alone cannot answer.
+
+\subsection{Interpretability}
+
+Overall, the three models sit at very different points on the interpretability spectrum. The \textbf{CDR} is maximally interpretable by design, it is a hand-coded decision tree that a physician can apply mentally at the bedside without any computation. Each branch has direct clinical meaning (e.g., palpable skull fracture in an infant $\rightarrow$ CT immediately), and the age stratification encodes domain knowledge about how the same signs differ in predictive value across developmental stages, exactly the pattern uncovered in Finding 2. Next, the \textbf{logistic regression model} is interpretable through its coefficients, visually demonstrated by \textcolor{blue}{Figure 10} below. 
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.5\textwidth, height=0.5\textheight, keepaspectratio]{lab1/documents/dslc_documentation/other_figures/lr_coefficients.png}
+    \caption{\footnotesize Logistic Regression Interpretation.}
+\end{figure}
+
+The two strongest predictors are basilar skull fracture signs ($\hat{\beta} = 3.30$) and palpable skull fracture and AMS (both $\hat{\beta} \approx 2.12$), consistent with their role as Step 1 high-risk predictors in the CDR. Severe mechanism ($\hat{\beta} = 1.45$) and any LOC ($\hat{\beta} = 1.45$) follow. Notably, LOC over 5 seconds carries a slightly negative coefficient ($\hat{\beta} = -0.32$), which is not a genuine reversal of its clinical importance but rather a suppression effect from its collinearity with \texttt{cdr\_loc\_any} (i.e., when any LOC is already in the model, the additional information in LOC $>$ 5 seconds is minimal). The age flag (\texttt{is\_under\_2}, $\hat{\beta} = 0.36$) indicates that infants carry modestly higher predicted risk holding all other predictors constant. Overall, the coefficient ordering broadly validates the CDR's predictor hierarchy, while quantifying the relative weight each sign carries in a learned model. Finally, \textbf{the random forest model} is the least directly interpretable of the three. Feature importance(s) show that AMS dominates (importance = 0.331), followed by severe mechanism (0.115) and any LOC (0.109). This broadly agrees with the CDR's hierarchy, but the forest weights AMS considerably more heavily, likely because it's capturing nonlinear interactions (e.g., AMS combined with severe mechanism) that neither CDR's explicit rules nor the logistic regression's structure can represent. In short, the random forest is best treated as a screening tool rather than a model whose predictions you can easily explain at the bedside.
+
+\subsection{Stability}
+
+To assess robustness to the same GCS threshold perturbation from Section~\ref{stability-check}, each model was re-evaluated on the perturbed dataset (\texttt{python code/models.py data/TBI\_PUD\_cleaned\_perturbed.csv}), expanding the modeling population from 42,412 to 42,717 by including the 305 GCS=13 patients flagged in the primary analysis group. Despite being a small group, these patients have a notably higher ciTBI rate (16.4\% vs.\ 0.89\%), adding 50 new positive cases and bringing the total to 426. \textcolor{blue}{Figure 11} below shows sensitivity and specificity for all three models before (solid blue) and after (hatched gray) the perturbation.
+
+\begin{figure}[htp]
+    \centering
+    \includegraphics[width=0.6\textwidth, height=0.6\textheight, keepaspectratio]{lab1/documents/dslc_documentation/other_figures/stability_check_modeling.png}
+    \caption{\footnotesize Modeling stability check}
+\end{figure}
+
+As shown in \textcolor{blue}{Figure 11}, all three models are highly stable. Sensitivity shifts by at most 0.4 percentage points across all models, specificity by at most 1.3 percentage points, and the rank ordering (CDR and random forest as the high sensitivity models, logistic regression as the high-specificity model) is completely preserved. Notably, the CDR misses exactly 12 ciTBI cases in both populations, confirming that the 50 added GCS=13 positives are all correctly flagged by the rule. The core conclusion from the modeling section holds: no single model wins on all metrics, and the sensitivity-specificity tradeoff is a fundamental feature of this problem, not a side effect of which patients we included.
+
+\section{Discussion}\label{discussion}
+
+This analysis sits at the intersection of three realms that the veridical data science framework asks us to think carefully about: data and reality, algorithms and models, and future data and reality.
+
+\textbf{Data and reality.} The PECARN dataset is unusually close to the reality it tries to capture because data was collected before anyone knew the imaging results, using standardized forms, double data entry, and careful follow-up. Even so, the correspondence is imperfect. Several key variables depend on parent recall (e.g., LOC duration), bedside physician judgment (e.g., AMS), or are simply unavailable for pre-verbal children (e.g., headache). The cleaning process surfaced exactly these tensions: 1,344 GCS inconsistencies, 9 depressed fracture miscodes, and special codes like 91 and 92 that encode clinical edge cases the data structure was not quite built to handle cleanly. The reality check against Kuppermann et al.\ confirms that after cleaning, the data aligns closely with the published study, but this alignment is itself conditional on trusting that the article's numbers are the right ground truth, which is a reasonable but not guaranteed assumption. The real constraint was not data size, albeit approximately 40,000 patients is large, instead it was outcome rarity: only 376 ciTBI cases (0.89\%). This drove every modeling decision, from class weighting to threshold selection to skipping a train-test split. It also means subgroup analyses have limits, i.e., risk ratios for rare symptoms in specific age groups rest on small counts and should be interpreted carefully.
+
+\textbf{Algorithms and models:} No single model dominated. The CDR achieves the highest sensitivity (96.8\%) by design, i.e., it was built by clinicians to minimize missed diagnoses, and it does. The cost is flagging over 18,000 healthy children for CT unnecessarily. The logistic regression improves specificity but misses 87 true ciTBI cases, a clinically unacceptable false negative rate for a screening tool. The random forest lands in between, with 94.9\% sensitivity, 65.5\% specificity, but only by tuning its decision threshold through cross-validation, which means its performance is optimistic relative to what would be expected on truly unseen data. Interpretability follows the same ordering: The CDR is fully transparent and requires no computation. The logistic regression and random forest can both be examined after the fact, through coefficients or feature importance(s) respectively, but neither produces the kind of plain clinical reasoning a physician can act on at the bedside, and for a tool meant to guide decisions in real time, that matters enormously.
+
+\textbf{Future data and reality:} The generalizability of these findings is constrained by the study's demographics. The enrolled population skews heavily White (54\%) and Black (40\%), with 37\% missing ethnicity data and limited geographic diversity given the 25 participating sites. A model trained and validated on this population may not perform equally well for children from different backgrounds or healthcare settings. Moreover, the three findings (mechanism severity paradox, age-dependent symptom prediction, and the LOC duration cliff) are robust within this dataset, but replication on an independent cohort would be needed before any of them could be used to revise clinical guidelines. The stability checks performed here (GCS threshold perturbation) demonstrate internal robustness, not external generalizability.
+
+\section{Conclusion}\label{conclusion}
+
+This analysis set out to rigorously clean the PECARN dataset, surface genuinely new patterns, and evaluate how learned models compare to the original clinical decision rule. On all four goals, the work delivers. The cleaning pipeline is transparent, reproducible, and validated against published results. The three findings go beyond what Kuppermann et al.\ reported: injury mechanism is a poor proxy for ciTBI risk, the same clinical sign carries dramatically different predictive weight at different ages, and LOC risk is not gradual but cliffs sharply at five minutes. Additionally, the modeling analysis shows that while a learned model can approach the CDR's sensitivity, it cannot replicate the CDR's interpretability or bedside usability, thus the rule remains the right tool for clinical practice precisely because a physician can apply it mentally in seconds without a computer. The deeper takeaway is that the CT scanning decision in pediatric head trauma is genuinely hard, and no amount of modeling resolves the fundamental tension between radiation exposure and missed diagnoses. What this analysis does is make that tension visible and quantified (every false negative is a child with a serious brain injury sent home, and every false positive is a child exposed to radiation unnecessarily). Notably, the right answer to this tradeoff is not a statistical one, it is a clinical and ethical one that the PECARN CDR, carefully derived and now carefully validated here, handles better than any purely data-driven alternative we tested.
+
+\section{Academic honesty statement}\label{academic-honesty-statement} \footnotesize
+Dear Professor Bin, all work in this report is my own. Every analytical decision, finding, and conclusion was made independently, and all code was written and tested by me personally. I used Claude (Anthropic) as an AI assistant for things like helping structure and debug code, talking through implementation approaches, and polishing my report writing. Any code that came out of those conversations  I read through completely, made sure I actually understood, and retyped myself. I did not use it to make decisions for me or draw conclusions I hadn't already thought through on my own.
+
+\section{Collaborators}\label{collaborators}
+
+\footnotesize{General lab instructions and expectations were discussed with peers, but all specific analytical decisions, implementations, and written work are entirely my own.}
+
+\section{Bibliography}\label{bibliography}
+
+\begin{hangparas}{2em}{1} \footnotesize
+    Kuppermann, Nathan, et al. “Identification of children at very low risk of clinically-important brain injuries after head trauma: A prospective cohort study.” The Lancet, vol. 374, no. 9696, Oct. 2009, pp. 1160–1170, https://doi.org/10.1016/s0140-6736(09)61558-0.
+
+    Yu, Bin, and Rebecca L. Barter. Veridical Data Science: The Practice of Responsible Data Analysis and Decision Making. The MIT Press, 2024.
+\end{hangparas}
+
+\end{document}

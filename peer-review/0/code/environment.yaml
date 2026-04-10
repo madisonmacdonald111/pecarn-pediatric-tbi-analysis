@@ -1,0 +1,23 @@
+name: stat214
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Pin Python 3.10 for scipy/sklearn compatibility (3.14 has known issues)
+  - python=3.10.*
+  - numpy>=1.24,<2
+  - pandas
+  - scipy>=1.10,<1.15
+  - scikit-learn>=1.3
+  - matplotlib
+  - seaborn
+  - xgboost
+  - jupyterlab
+  - ipykernel
+  - openpyxl
+  - statsmodels
+  - ruff
+  - pip:
+    - nbconvert[webpdf]
+    - playwright
+
